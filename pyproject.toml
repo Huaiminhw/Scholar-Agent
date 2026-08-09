@@ -1,0 +1,25 @@
+[build-system]
+requires = ['setuptools>=68.0']
+build-backend = 'setuptools.build_meta'
+
+[project]
+name = 'scholar-agent'
+version = '0.1.0'
+description = 'LLM Agent for Comprehensive Academic Paper Search'
+requires-python = '>=3.11'
+dependencies = [
+    'openai>=1.0',
+    'semanticscholar>=0.7',
+    'requests>=2.28',
+    'pydantic-settings>=2.0',
+    'loguru>=0.7',
+    'python-dotenv>=1.0',
+    'numpy>=2.1',
+    'sentence-transformers>=5.0',
+]
+
+[project.optional-dependencies]
+dev = ['pytest>=8.0', 'mypy>=1.0']
+
+[tool.setuptools.packages.find]
+where = ['src']

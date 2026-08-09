@@ -1,0 +1,121 @@
+# =============================================================================
+# Python bytecode / build artifacts
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+pip-wheel-metadata/
+
+# =============================================================================
+# Virtual environments
+# =============================================================================
+.venv/
+venv/
+env/
+ENV/
+
+# =============================================================================
+# Secrets and local environment configuration
+# =============================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Keep credentials and machine-specific model paths out of Git.
+secrets/
+
+# =============================================================================
+# Local ML models and Hugging Face caches
+# BGE-M3 is several GB and is transferred to the server separately.
+# =============================================================================
+/models/
+/.cache/
+.cache/huggingface/
+huggingface/
+
+# Old config with leaked API key
+/config.py
+
+# Dev instructions
+WEEK1_INSTRUCTIONS.md
+
+# Old root-level scripts (dead code, kept per instructions)
+/main.py
+/evaluate.py
+/test.py
+
+# Old src files (dead code — no entry points reference these anymore)
+/src/agent.py
+/src/formatter.py
+/src/query_*.py
+/src/ranker.py
+/src/retriever.py
+/src/1
+/src/init_
+
+# Generated data reports (hardcoded old paths)
+/data_schema_report.json
+/data_schema_report.md
+
+# =============================================================================
+# Tests, coverage, linters and notebooks
+# =============================================================================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.hypothesis/
+.ipynb_checkpoints/
+
+# =============================================================================
+# IDE / editors
+# =============================================================================
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# =============================================================================
+# Local datasets and archives
+# =============================================================================
+/data/
+*.zip
+*.7z
+*.tar
+*.tar.gz
+*.jsonl
+
+# =============================================================================
+# Generated runtime output
+# =============================================================================
+/output/
+/outputs/
+/results/
+/logs/
+*.log
+*.tmp
+*.temp
+
+# =============================================================================
+# Operating system files
+# =============================================================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/
