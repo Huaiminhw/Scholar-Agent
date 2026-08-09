@@ -40,7 +40,7 @@ models/                    # 本地模型，不提交 Git
 在 PowerShell 中安装：
 
 ```powershell
-cd "D:\桌面\草稿\比赛\scholar_agent_师弟"
+cd "D:scholar_agent"
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 ```
