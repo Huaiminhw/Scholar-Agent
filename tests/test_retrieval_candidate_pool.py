@@ -24,6 +24,7 @@ from scholar_agent_v2.query_understanding.schema import (
 from scholar_agent_v2.candidate_pool.filter import evaluate_candidate
 from scholar_agent_v2.candidate_pool.models import CandidatePaper, MatchStatus, PaperIdentifiers
 from scholar_agent_v2.candidate_pool.pool import CandidatePool
+from scholar_agent_v2.candidate_pool.rerank import RerankConfig
 from scholar_agent_v2.retrieval.models import RetrievalHit, RetrievalOrigin, RetrievalStrategy, SearchSource
 from scholar_agent_v2.retrieval.route_builder import build_retrieval_plan
 
@@ -217,6 +218,57 @@ def test_latest_mode_gives_newer_paper_a_higher_preference_score():
 
     assert pool.candidates[0].candidate_id == "newer"
     assert newer.score_components["preference"] > older.score_components["preference"]
+
+
+def test_citation_channel_weight_scales_only_citation_candidates():
+    analysis = QueryAnalysisResult(
+        original_query="multimodal large language models",
+        query_type=QueryType.BROAD_BY_DESCRIPTION,
+        intent=QueryIntent(),
+        content="multimodal large language models",
+    )
+    normal_hit = RetrievalHit(
+        source=SearchSource.SEMANTIC_SCHOLAR,
+        source_id="normal",
+        title="Normal Multimodal Large Language Models",
+        abstract="multimodal large language models",
+        origin=_origin(
+            SearchSource.SEMANTIC_SCHOLAR,
+            "RT1",
+            "QC1",
+            QueryKind.CORE,
+            1,
+        ),
+    )
+    citation_origin = _origin(
+        SearchSource.SEMANTIC_SCHOLAR,
+        "CIT-F-seed",
+        "CITATION",
+        QueryKind.EXPANDED,
+        1,
+    ).model_copy(update={"strategy": RetrievalStrategy.CITATION})
+    citation_hit = RetrievalHit(
+        source=SearchSource.SEMANTIC_SCHOLAR,
+        source_id="citation",
+        title="Citation Multimodal Large Language Models",
+        abstract="multimodal large language models",
+        origin=citation_origin,
+    )
+    pool = CandidatePool.from_hits([normal_hit, citation_hit])
+    pool.prerank(
+        analysis,
+        _generation(),
+        num_planned_routes=1,
+        config=RerankConfig(citation_channel_weight=0.7),
+    )
+    by_title = {candidate.title: candidate for candidate in pool.candidates}
+
+    assert by_title["Normal Multimodal Large Language Models"].score_components[
+        "citation_channel_multiplier"
+    ] == 1.0
+    assert by_title["Citation Multimodal Large Language Models"].score_components[
+        "citation_channel_multiplier"
+    ] == 0.7
 
 
 def test_exclude_survey_can_use_strong_title_evidence():

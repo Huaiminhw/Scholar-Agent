@@ -23,6 +23,44 @@ from .base import AcademicSourceAdapter
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
 
+_TERM_RE = re.compile(r"[a-z0-9]+(?:[-_.][a-z0-9]+)*", re.I)
+_SEARCH_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "about",
+    "all",
+    "article",
+    "articles",
+    "based",
+    "by",
+    "find",
+    "for",
+    "from",
+    "give",
+    "in",
+    "list",
+    "of",
+    "on",
+    "or",
+    "paper",
+    "papers",
+    "related",
+    "research",
+    "show",
+    "showing",
+    "studies",
+    "study",
+    "that",
+    "the",
+    "to",
+    "use",
+    "using",
+    "via",
+    "which",
+    "with",
+}
+
 
 class ArxivAdapter(AcademicSourceAdapter):
     source = SearchSource.ARXIV
@@ -49,6 +87,7 @@ class ArxivAdapter(AcademicSourceAdapter):
         )
 
     async def search(self, route: RouteSpec) -> AdapterSearchResult:
+        api_calls = 1
         if route.strategy == RetrievalStrategy.IDENTIFIER:
             arxiv_id = normalize_arxiv_id(route.query_text)
             if not arxiv_id:
@@ -66,9 +105,31 @@ class ArxivAdapter(AcademicSourceAdapter):
 
         response = await self._get(self.BASE_URL, params=params, headers={"Accept": "application/atom+xml"})
         entries = self._parse_feed(response.body)
+        if (
+            not entries
+            and route.strategy not in {
+                RetrievalStrategy.IDENTIFIER,
+                RetrievalStrategy.TITLE,
+                RetrievalStrategy.AUTHOR,
+            }
+            and len(self._query_terms(route.query_text)) > 1
+        ):
+            # arXiv accepted the request but an AND query was too restrictive.
+            # Retry the same terms with OR rather than returning a silent zero.
+            params["search_query"] = self._build_query(route, operator="OR")
+            response = await self._get(
+                self.BASE_URL,
+                params=params,
+                headers={"Accept": "application/atom+xml"},
+            )
+            api_calls += 1
+            entries = self._parse_feed(response.body)
         records = [normalize_arxiv_entry(x) for x in entries]
         hits = [self._to_hit(route, r, i) for i, r in enumerate(records, 1)]
-        return AdapterSearchResult(hits=hits, api_calls=1)
+        warnings = []
+        if api_calls > 1:
+            warnings.append("arXiv AND query returned no results; retried with OR")
+        return AdapterSearchResult(hits=hits, api_calls=api_calls, warnings=warnings)
 
     async def fetch_details(self, ids: list[str]) -> AdapterFetchResult:
         unique = list(dict.fromkeys(x for x in (normalize_arxiv_id(v) for v in ids) if x))
@@ -88,14 +149,39 @@ class ArxivAdapter(AcademicSourceAdapter):
             records.extend(normalize_arxiv_entry(x) for x in self._parse_feed(response.body))
         return AdapterFetchResult(records=records, api_calls=api_calls)
 
-    def _build_query(self, route: RouteSpec) -> str:
+    def _build_query(
+        self,
+        route: RouteSpec,
+        *,
+        operator: str = "AND",
+    ) -> str:
         if route.strategy == RetrievalStrategy.TITLE:
             return f'ti:"{self._escape(route.query_text)}"'
         if route.strategy == RetrievalStrategy.AUTHOR:
             author = route.filters.authors[0] if route.filters.authors else route.query_text
             return f'au:"{self._escape(author)}"'
-        # 直接 all:<query>，让 arXiv parser 自己处理词项；不额外生成新语义。
-        return f'all:"{self._escape(route.query_text)}"'
+        terms = self._query_terms(route.query_text)
+        if not terms:
+            return f'all:"{self._escape(route.query_text)}"'
+        joiner = f" {operator} "
+        return joiner.join(f'all:"{self._escape(term)}"' for term in terms)
+
+    @staticmethod
+    def _query_terms(value: str, *, max_terms: int = 12) -> list[str]:
+        """Extract deterministic arXiv terms without treating a long query as one phrase."""
+
+        terms: list[str] = []
+        seen: set[str] = set()
+        for match in _TERM_RE.finditer(value or ""):
+            term = match.group(0).strip("._-")
+            key = term.casefold()
+            if not term or key in _SEARCH_STOP_WORDS or key in seen:
+                continue
+            seen.add(key)
+            terms.append(term)
+            if len(terms) >= max_terms:
+                break
+        return terms
 
     @staticmethod
     def _escape(value: str) -> str:

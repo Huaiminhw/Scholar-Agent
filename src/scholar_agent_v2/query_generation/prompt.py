@@ -16,12 +16,12 @@ RULES:
 1. Generate only high-confidence alternative academic phrasings/synonyms.
 2. Do NOT add new authors, venues, years, datasets, named methods, named models, tasks, or publication types that are not supported by the input.
 3. Do NOT narrow a broad method into specific submethods (e.g. reinforcement learning -> PPO/GRPO/DQN) unless that exact submethod is already present in the input.
-4. Preserve essential relation semantics (e.g. method X optimizes task/system Y). Do not turn a required relation into unrelated co-occurring keywords.
-5. Soft preferences must not become mandatory search terms.
-6. Do NOT add survey/review/state-of-the-art terms unless the user's task explicitly asks for a literature review/overview or publication type review/survey.
-7. Prefer concise English academic search phrases when appropriate, while preserving proper names and high-confidence aliases.
-8. Each query should usually contain 3-12 informative terms. Avoid full natural-language questions.
-9. Queries must be meaningfully different; no near-duplicates.
+4. A retrieval query is a recall probe, not the full final-selection expression. final_selection_requirements are enforced downstream; do NOT pack every requirement into every query.
+5. Keep at least one core entity or relation anchor in each query. Across variants, cover complementary semantic angles rather than repeating the same constraint bundle.
+6. Omit filter-like metadata (year, venue, author, publication type, citation count, field, language) from query text. For any_of, prefer separate alternatives instead of combining them as if all were required.
+7. Preserve an essential relation when that relation is the angle being expanded. Do not reduce it to unrelated co-occurring keywords.
+8. Soft preferences must not become mandatory terms. Do not add survey/review terms unless explicitly requested.
+9. Prefer concise English academic phrases of 3-12 informative terms; preserve proper names and confirmed aliases. Queries must be meaningfully different.
 10. Output JSON only.
 """.strip()
 
@@ -39,20 +39,18 @@ def _constraint_summary(analysis: QueryAnalysisResult) -> dict:
     def simple(items):
         return [
             {
-                "id": x.id,
                 "type": x.type.value,
                 "operator": x.operator.value,
                 "value": x.value,
                 "values": x.values,
-                "source_text": x.source_text,
             }
             for x in items
         ]
 
     return {
-        "hard": simple(analysis.constraints.hard),
-        "soft": simple(analysis.constraints.soft),
-        "exclude": simple(analysis.constraints.exclude),
+        "final_selection_requirements": simple(analysis.constraints.hard),
+        "soft_preferences": simple(analysis.constraints.soft),
+        "exclusions": simple(analysis.constraints.exclude),
     }
 
 
@@ -83,13 +81,11 @@ def build_expansion_user_prompt(
     ]
 
     compact_input = {
-        "original_query": analysis.original_query,
         "content": analysis.content,
         "query_type": analysis.query_type.value,
         "intent": {
             "task": analysis.intent.task.value,
             "mode": analysis.intent.mode.value,
-            "goal": analysis.intent.goal,
         },
         "entities": entities,
         "relations": relations,
@@ -100,7 +96,8 @@ def build_expansion_user_prompt(
 
     return (
         "Generate additional scholarly search queries from this structured query analysis.\n"
-        "Do not repeat already_generated_queries.\n\n"
+        "Treat final_selection_requirements as downstream boundaries, not a checklist "
+        "for every query. Do not repeat already_generated_queries.\n\n"
         + json.dumps(compact_input, ensure_ascii=False, separators=(",", ":"))
         + "\n\nReturn exactly: "
         + '{"expanded_queries":[{"query":"...","reason":"..."}]}'

@@ -13,9 +13,11 @@ class StrictBaseModel(BaseModel):
 
 
 class SearchSource(str, Enum):
+    PASA_LOCAL = "pasa_local"
     OPENALEX = "openalex"
     SEMANTIC_SCHOLAR = "semantic_scholar"
     ARXIV = "arxiv"
+    GOOGLE_SEARCH = "google_search"
 
 
 class RetrievalStrategy(str, Enum):
@@ -107,11 +109,36 @@ class RouteSpec(StrictBaseModel):
         return self
 
 
+class AdaptiveDepthBudget(StrictBaseModel):
+    """Two-round per-route retrieval depth budget.
+
+    ``first_round_limit`` is the inexpensive probe depth.  Routes that fill
+    that depth and provide enough de-duplicated candidate yield may be
+    re-issued at ``max_route_limit``.  Keeping these values in the plan makes
+    local and online runs inspectable and removes 28/50 policy constants from
+    the executor.
+    """
+
+    enabled: bool = False
+    first_round_limit: int = Field(default=20, ge=1, le=100)
+    max_route_limit: int = Field(default=20, ge=1, le=100)
+    min_new_candidate_rate: float = Field(default=0.15, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_limits(self):
+        if self.first_round_limit > self.max_route_limit:
+            raise ValueError("first_round_limit cannot exceed max_route_limit")
+        if self.enabled and self.first_round_limit == self.max_route_limit:
+            raise ValueError("adaptive depth requires first_round_limit < max_route_limit")
+        return self
+
+
 class RetrievalPlan(StrictBaseModel):
     schema_version: Literal["1.0"] = "1.0"
     routes: list[RouteSpec] = Field(default_factory=list)
     max_routes: int = Field(default=10, ge=1, le=30)
     max_total_hits: int = Field(default=300, ge=1, le=2000)
+    depth_budget: AdaptiveDepthBudget = Field(default_factory=AdaptiveDepthBudget)
     warnings: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -136,6 +163,10 @@ class RetrievalOrigin(StrictBaseModel):
     rank: int = Field(ge=1)
     source_score: float | None = None
     applied_constraint_ids: list[str] = Field(default_factory=list)
+    citation_direction: Literal["forward", "backward"] | None = None
+    citation_seed_id: str | None = None
+    citation_hop: int | None = Field(default=None, ge=1)
+    search_iteration: int | None = Field(default=None, ge=1)
 
 
 class SourcePaperRecord(StrictBaseModel):
@@ -163,6 +194,32 @@ class SourcePaperRecord(StrictBaseModel):
 
     urls: list[str] = Field(default_factory=list)
     raw: dict[str, Any] | None = None
+
+
+class CitationLookupKey(StrictBaseModel):
+    """Source-neutral identifiers used to resolve a snowball seed."""
+
+    candidate_id: str
+    title: str | None = None
+    doi: str | None = None
+    arxiv_id: str | None = None
+    semantic_scholar_id: str | None = None
+    openalex_id: str | None = None
+
+
+class CitationEdge(StrictBaseModel):
+    source: SearchSource
+    direction: Literal["forward", "backward"]
+    seed_candidate_id: str
+    target: SourcePaperRecord
+    is_influential: bool = False
+    num_contexts: int = Field(default=1, ge=1)
+
+
+class CitationNeighborResult(StrictBaseModel):
+    edges: list[CitationEdge] = Field(default_factory=list)
+    api_calls: int = Field(default=0, ge=0)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class RetrievalHit(SourcePaperRecord):
@@ -210,12 +267,37 @@ class RetrievalMetrics(StrictBaseModel):
     source_api_calls: dict[str, int] = Field(default_factory=dict)
     source_latencies_ms: dict[str, float] = Field(default_factory=dict)
     total_latency_ms: float = 0.0
+    retrieval_rounds: int = 1
+    stop_reason: str | None = None
+
+
+class RetrievalRoundMetrics(StrictBaseModel):
+    round_number: int = Field(ge=1)
+    requested_route_limit: int = Field(ge=1, le=100)
+    route_ids: list[str] = Field(default_factory=list)
+    executed_routes: int = 0
+    raw_hits: int = 0
+    incremental_hits: int = 0
+    refetched_hits_discarded: int = 0
+    cumulative_unique_candidates: int = 0
+    added_unique_candidates: int = 0
+    new_candidate_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    duplicate_rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    latency_ms: float = Field(default=0.0, ge=0.0)
+    stop_reason: str | None = None
+
+
+class RetrievalRoundResult(StrictBaseModel):
+    metrics: RetrievalRoundMetrics
+    # Cumulative snapshot after this round, used by reproducible evaluations.
+    hits: list[RetrievalHit] = Field(default_factory=list)
 
 
 class RetrievalOutput(StrictBaseModel):
     plan: RetrievalPlan
     executions: list[RouteExecutionResult] = Field(default_factory=list)
     hits: list[RetrievalHit] = Field(default_factory=list)
+    rounds: list[RetrievalRoundResult] = Field(default_factory=list)
     metrics: RetrievalMetrics = Field(default_factory=RetrievalMetrics)
     warnings: list[str] = Field(default_factory=list)
 
@@ -227,13 +309,19 @@ __all__ = [
     "RetrievalFilters",
     "SourceCapabilities",
     "RouteSpec",
+    "AdaptiveDepthBudget",
     "RetrievalPlan",
     "RetrievalOrigin",
     "SourcePaperRecord",
+    "CitationLookupKey",
+    "CitationEdge",
+    "CitationNeighborResult",
     "RetrievalHit",
     "AdapterSearchResult",
     "AdapterFetchResult",
     "RouteExecutionResult",
     "RetrievalMetrics",
+    "RetrievalRoundMetrics",
+    "RetrievalRoundResult",
     "RetrievalOutput",
 ]

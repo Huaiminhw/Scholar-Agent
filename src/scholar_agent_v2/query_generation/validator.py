@@ -33,6 +33,15 @@ _SURVEY_TERMS = {
     "meta-analysis",
     "taxonomy",
 }
+_FILTER_METADATA_TYPES = {
+    ConstraintType.YEAR,
+    ConstraintType.AUTHOR,
+    ConstraintType.VENUE,
+    ConstraintType.PUBLICATION_TYPE,
+    ConstraintType.MIN_CITATIONS,
+    ConstraintType.FIELD_OF_STUDY,
+    ConstraintType.LANGUAGE,
+}
 
 
 def _flatten_values(items: Iterable[ConstraintItem], ctype: ConstraintType) -> list[str]:
@@ -123,6 +132,24 @@ def _known_soft_literals(analysis: QueryAnalysisResult) -> set[str]:
     return literals
 
 
+def _hard_filter_literals(analysis: QueryAnalysisResult) -> set[str]:
+    """Values enforced by retrieval/candidate filtering, not search text."""
+    literals: set[str] = set()
+    for item in analysis.constraints.hard:
+        if item.type not in _FILTER_METADATA_TYPES:
+            continue
+        values = ([item.value] if item.value is not None else []) + list(item.values)
+        for value in values:
+            text = normalize_query_text(str(value))
+            if text:
+                literals.add(text)
+    return literals
+
+
+def _contains_normalized_literal(text: str, literal: str) -> bool:
+    return re.search(rf"(?:^|\s){re.escape(literal)}(?:$|\s)", text) is not None
+
+
 def _core_anchors(analysis: QueryAnalysisResult) -> set[str]:
     anchors: set[str] = set()
 
@@ -173,6 +200,22 @@ def validate_generated_query(
                     severity="error",
                 )
             )
+
+        # 已确认的 hard metadata 仍属于下游过滤条件，而不是内容召回词。
+        # 这条确定性防线避免模型把完整 final-selection expression 塞回
+        # 每一条 Expanded Query，不增加任何 LLM 调用或 Token。
+        for literal in _hard_filter_literals(analysis):
+            if _contains_normalized_literal(text_norm, literal):
+                issues.append(
+                    QueryValidationIssue(
+                        code="HARD_METADATA_EMBEDDED",
+                        message=(
+                            f"扩展查询包含应由下游过滤的 hard metadata {literal!r}。"
+                        ),
+                        query_id=query.query_id,
+                        severity="error",
+                    )
+                )
 
     # 2) 用户未要求综述时，不允许 LLM 擅自改成 survey/review。
     if query.kind == QueryKind.EXPANDED and not _explicit_review_intent(analysis):

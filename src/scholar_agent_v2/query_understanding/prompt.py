@@ -118,7 +118,7 @@ Current year: __CURRENT_YEAR__
 
 === 1. CORE RULES ===
 - Be faithful to the user's wording. Normalize only high-confidence names/abbreviations.
-- "content" contains scientific meaning only; move author/year/venue/result-format/open-access/code requirements to their structured fields.
+- "content" is the research proposition/topic; move author/year/venue/result-format/open-access/code requirements to their structured fields.
 - Preserve important semantic relations; co-occurring keywords are not equivalent to a relation.
 - hard = required; soft = explicit preference ("prefer/最好/优先/尽量/if possible");
   exclude = explicit negative ("不要/exclude/without/not").
@@ -134,7 +134,7 @@ Choose one:
 - SPECIFIC_BY_NAME: one specific paper/resource located by a known alias/name; a named method/model alone is not enough.
 - BY_AUTHOR: papers authored by specified author(s).
 - METADATA_ONLY_NO_AUTHOR: usable metadata constraints but essentially no topical content and no author requirement.
-- BROAD_BY_DESCRIPTION: normal topic/method/task/benchmark/citation-description search.
+- BROAD_BY_DESCRIPTION: normal research-topic, method, benchmark, phenomenon, or scientific-relation search.
 - UNKNOWN: cannot reliably represent as academic-paper search.
 
 Priority:
@@ -166,7 +166,10 @@ Properties:
 - suitable_for_by_citing=true only when citation expansion from a named resource naturally matches the request; otherwise false/null.
 
 === 4. CONSTRAINTS ===
-Extract only conditions that actually constrain desired papers.
+A Constraint admits/prefers/excludes candidate papers. Study variables,
+hypotheses, comparisons, causes, and phenomena belong in content/relations unless
+they explicitly restrict returned papers. "Less data outperforms more" is a
+relation/topic, not a dataset-size constraint.
 
 IDs:
 hard C1,C2...; soft P1,P2...; exclude E1,E2...; each ID unique.
@@ -208,6 +211,8 @@ Create RelationConstraint when the connection is necessary for relevance, e.g.:
 - method A -> compared_with -> method B
 
 Relation level follows hard/soft/exclude.
+Level means retrieval necessity, not truth/confidence: hard=required in matching
+papers; soft=preferred; exclude=must not match.
 Do not create trivial topic-membership relations.
 Do not split an essential relation into independent keywords.
 Avoid redundant hard constraints when the relation already fully expresses the same requirement; keep independently meaningful year/venue/dataset/evaluation constraints.
@@ -229,9 +234,13 @@ Use NOT only when exclude cannot represent the negative group cleanly.
 
 === 7. ENTITIES, DOMAIN, CLARIFICATION ===
 Entities:
-extract only useful downstream entities. Use canonical names/aliases only when high-confidence.
-Never expand a broad class into specific methods (e.g. reinforcement learning -> PPO/GRPO/DQN is forbidden).
-Preserve source_text.
+- Entity is a stable academic name/term reusable for retrieval/aliases, not every noun, goal, variable, or filter.
+- Allowed types are strictly:
+  topic, method, model, dataset, author, venue, paper, other.
+- Never copy intent.task/ConstraintItem.type into EntityType; task, technology,
+  evaluation, goal, objective, problem, phenomenon, idea are invalid.
+- Never invent/narrow entities (RL -> PPO); keep high-confidence aliases and source_text.
+- Cross-role overlap is allowed only when it adds distinct retrieval meaning.
 
 Domain:
 choose one broad main_field and only materially relevant secondary fields; use "Unknown" if unclear.
@@ -263,7 +272,7 @@ Before output, silently ensure:
 3. Essential relations and explicit OR pairings are preserved.
 4. IDs are unique and logic references existing IDs.
 5. No invented author/venue/dataset/method/year.
-6. Output is directly usable by downstream retrieval.
+6. Entity/Constraint/Relation roles obey their boundaries above; output is retrieval-ready.
 """
 
 
@@ -290,6 +299,14 @@ Query: 找 Dan Weld 写的 automated planning 论文，优先高引用，给我1
 Interpretation:
 BY_AUTHOR; author hard; topic hard; high-citation soft + central_first=true;
 requested_top_k=10; required_fields includes doi.
+
+EXAMPLE 4 (boundary counterexample)
+Query: Give me papers showing that less pre-training data can outperform more data.
+Interpretation:
+BROAD_BY_DESCRIPTION; content preserves the research claim;
+relation=smaller pre-training data -> outperform -> larger pre-training data, level=hard
+because matching papers must study/report it; do NOT create a dataset-size Constraint;
+"task" is never an entities[].type value.
 """
 
 

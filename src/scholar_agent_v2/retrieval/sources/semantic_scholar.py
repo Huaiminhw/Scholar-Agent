@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 
 from ..models import (
     AdapterFetchResult,
     AdapterSearchResult,
+    CitationEdge,
+    CitationLookupKey,
+    CitationNeighborResult,
     RetrievalHit,
     RetrievalOrigin,
     RetrievalStrategy,
@@ -45,6 +48,7 @@ class SemanticScholarAdapter(AcademicSourceAdapter):
         identifier_lookup=True,
         author_search=True,
         filter_only=False,
+        citation_search=True,
         supported_filters={"year", "venue", "publication_type", "field_of_study", "min_citations"},
     )
 
@@ -151,6 +155,44 @@ class SemanticScholarAdapter(AcademicSourceAdapter):
                     warnings.append("S2 batch returned null paper record")
         return AdapterFetchResult(records=records, api_calls=api_calls, warnings=warnings)
 
+    async def citation_neighbors(
+        self,
+        seed: CitationLookupKey,
+        *,
+        direction: Literal["forward", "backward"],
+        limit: int,
+    ) -> CitationNeighborResult:
+        identifier = self._citation_identifier(seed)
+        if not identifier or limit <= 0:
+            return CitationNeighborResult(
+                warnings=[f"S2 could not resolve citation seed {seed.candidate_id}"]
+            )
+        endpoint = "citations" if direction == "forward" else "references"
+        paper_field = "citingPaper" if direction == "forward" else "citedPaper"
+        response = await self._get(
+            f"{self.BASE_URL}/paper/{identifier}/{endpoint}",
+            params={"limit": min(limit, 1000), "fields": S2_FIELDS},
+            headers=self._headers(),
+        )
+        rows = response.json().get("data", []) or []
+        edges: list[CitationEdge] = []
+        for row in rows:
+            raw = row.get(paper_field) if isinstance(row, dict) else None
+            if not isinstance(raw, dict) or not raw.get("paperId"):
+                continue
+            contexts = row.get("contexts") or []
+            edges.append(
+                CitationEdge(
+                    source=self.source,
+                    direction=direction,
+                    seed_candidate_id=seed.candidate_id,
+                    target=normalize_s2_paper(raw),
+                    is_influential=bool(row.get("isInfluential")),
+                    num_contexts=max(1, len(contexts)),
+                )
+            )
+        return CitationNeighborResult(edges=edges, api_calls=1)
+
     def _apply_filters(self, params: dict[str, Any], route: RouteSpec) -> None:
         f = route.filters
         if f.year_start is not None or f.year_end is not None:
@@ -181,6 +223,16 @@ class SemanticScholarAdapter(AcademicSourceAdapter):
         if text.upper().startswith(("DOI:", "ARXIV:", "CORPUSID:", "PMID:", "MAG:", "ACL:")):
             return text
         return text
+
+    @classmethod
+    def _citation_identifier(cls, seed: CitationLookupKey) -> str | None:
+        if seed.semantic_scholar_id:
+            return seed.semantic_scholar_id
+        if seed.doi:
+            return f"DOI:{seed.doi}"
+        if seed.arxiv_id:
+            return f"ARXIV:{seed.arxiv_id}"
+        return None
 
     @staticmethod
     def _to_hit(route: RouteSpec, record, rank: int, raw: dict[str, Any]) -> RetrievalHit:

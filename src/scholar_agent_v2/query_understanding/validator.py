@@ -1,6 +1,6 @@
 # query_understanding/validator.py
 """
-QueryAnalysisResult 的业务逻辑校验与安全归一化。
+QueryAnalysisResult 的业务逻辑校验。
 
 职责：
 - schema.py：字段/类型/枚举/Pydantic 模型级校验
@@ -25,6 +25,7 @@ from .schema import (
     QueryAnalysisResult,
     QueryType,
 )
+from .normalizer import safe_normalize
 
 
 class IssueSeverity(str, Enum):
@@ -218,7 +219,7 @@ def _validate_constraint_operator(
                     path=path,
                     refs=(item.id,),
                 )
-            elif item.values[0] > item.values[1]:
+            elif int(item.values[0]) > int(item.values[1]):
                 report.add(
                     "YEAR_RANGE_REVERSED",
                     "年份范围下界不能大于上界。",
@@ -227,7 +228,7 @@ def _validate_constraint_operator(
                     refs=(item.id,),
                 )
         elif all(_is_number(v) for v in item.values):
-            if item.values[0] > item.values[1]:
+            if float(item.values[0]) > float(item.values[1]):
                 report.add(
                     "BETWEEN_REVERSED",
                     "between 的下界不能大于上界。",
@@ -671,72 +672,6 @@ def validate_query_analysis(
     _validate_entities(result, report)
 
     return report
-
-
-def _dedupe_strings(values: list[str]) -> list[str]:
-    """保持原始顺序、大小写不敏感去重。"""
-    output: list[str] = []
-    seen: set[str] = set()
-
-    for value in values:
-        normalized = _normalize_scalar(value)
-
-        if normalized in {"", "<null>"} or normalized in seen:
-            continue
-
-        seen.add(normalized)
-        output.append(value.strip())
-
-    return output
-
-
-def safe_normalize(
-    result: QueryAnalysisResult,
-    *,
-    original_query: str | None = None,
-) -> QueryAnalysisResult:
-    """
-    只执行不会改变用户检索语义的安全修复。
-
-    会做：
-    - 恢复真实 original_query
-    - aliases / secondary_fields / required_fields / warnings 去重
-    - clarification.needed=true 且 status=success 时，将 status 调整为
-      needs_clarification
-
-    不会做：
-    - hard ↔ soft 转换
-    - 新增/删除语义约束
-    - 猜测年份、作者、venue、方法
-    - 自动修改 query_type
-    """
-    normalized = result.model_copy(deep=True)
-
-    if original_query is not None:
-        normalized.original_query = original_query
-
-    normalized.domains.secondary_fields = _dedupe_strings(
-        normalized.domains.secondary_fields
-    )
-
-    normalized.result_requirements.required_fields = _dedupe_strings(
-        normalized.result_requirements.required_fields
-    )
-
-    normalized.warnings = _dedupe_strings(
-        normalized.warnings
-    )
-
-    for entity in normalized.entities:
-        entity.aliases = _dedupe_strings(entity.aliases)
-
-    if (
-        normalized.clarification.needed
-        and normalized.status == ParseStatus.SUCCESS
-    ):
-        normalized.status = ParseStatus.NEEDS_CLARIFICATION
-
-    return normalized
 
 
 __all__ = [

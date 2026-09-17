@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from ..query_generation.models import QueryGenerationOutput, QueryGenerationResult, QueryKind
 from ..query_understanding.schema import QueryAnalysisResult, RetrievalMode
+from ..retrieval.models import RetrievalStrategy
 
 from .models import CandidatePaper
 
@@ -21,6 +22,7 @@ class RerankConfig:
     soft_match_weight: float = 0.06
     preference_weight: float = 0.06
     rrf_k: int = 60
+    citation_channel_weight: float = 1.0
 
 
 KIND_WEIGHTS = {
@@ -54,6 +56,22 @@ def _weighted_rrf(candidate: CandidatePaper, k: int) -> float:
         weight = KIND_WEIGHTS.get(origin.query_kind, 0.7)
         score += weight / (k + origin.rank)
     return score
+
+
+def _citation_channel_multiplier(
+    candidate: CandidatePaper,
+    citation_channel_weight: float,
+) -> float:
+    """Scale only the share of evidence originating from citation expansion."""
+
+    if not candidate.origins:
+        return 1.0
+    citation_origins = sum(
+        origin.strategy == RetrievalStrategy.CITATION
+        for origin in candidate.origins
+    )
+    citation_fraction = citation_origins / len(candidate.origins)
+    return 1.0 - citation_fraction * (1.0 - citation_channel_weight)
 
 
 def _lexical_score(candidate: CandidatePaper, generation: QueryGenerationResult) -> float:
@@ -147,6 +165,11 @@ def rerank_candidates(
             + cfg.soft_match_weight * soft
             + cfg.preference_weight * preference
         )
+        citation_multiplier = _citation_channel_multiplier(
+            candidate,
+            cfg.citation_channel_weight,
+        )
+        score *= citation_multiplier
         candidate.score_components = {
             "rrf": rrf,
             "lexical": lexical,
@@ -154,6 +177,7 @@ def rerank_candidates(
             "route_coverage": route_cov,
             "soft_match": soft,
             "preference": preference,
+            "citation_channel_multiplier": citation_multiplier,
         }
         candidate.retrieval_score = float(score)
 

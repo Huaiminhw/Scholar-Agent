@@ -448,6 +448,8 @@ def test_validator_failure_triggers_repair():
     output = run_analyzer(client)
 
     assert output.repaired is True
+    assert output.repair_trigger is not None
+    assert "MULTI_VALUE_OP_TOO_FEW_VALUES" in output.repair_trigger
     assert output.validation.is_valid is True
 
     assert output.metrics.api_calls == 2
@@ -470,6 +472,8 @@ def test_malformed_json_triggers_repair():
     output = run_analyzer(client)
 
     assert output.repaired is True
+    assert output.repair_trigger is not None
+    assert "JSONExtractionError" in output.repair_trigger
     assert output.metrics.api_calls == 2
     assert output.validation.is_valid is True
 

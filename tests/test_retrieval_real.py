@@ -24,6 +24,7 @@ from scholar_agent_v2.retrieval.models import (
 )
 from scholar_agent_v2.retrieval.orchestrator import RetrievalOrchestrator
 from scholar_agent_v2.retrieval.sources.arxiv import ArxivAdapter
+from scholar_agent_v2.retrieval.sources.google_search import GoogleSearchAdapter
 from scholar_agent_v2.retrieval.sources.openalex import OpenAlexAdapter
 from scholar_agent_v2.retrieval.sources.semantic_scholar import SemanticScholarAdapter
 
@@ -39,6 +40,7 @@ _ROUTE_IDS = {
     SearchSource.OPENALEX: "RT_OA",
     SearchSource.SEMANTIC_SCHOLAR: "RT_S2",
     SearchSource.ARXIV: "RT_AX",
+    SearchSource.GOOGLE_SEARCH: "RT_GOOGLE",
 }
 
 
@@ -97,6 +99,20 @@ def _build_adapters(enabled_sources: list[SearchSource]):
     if SearchSource.ARXIV in enabled:
         adapters[SearchSource.ARXIV] = ArxivAdapter(
             timeout_seconds=30.0,
+        )
+
+    if SearchSource.GOOGLE_SEARCH in enabled:
+        google_key = os.getenv("GOOGLE_SEARCH_API_KEY", "").strip()
+        google_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID", "").strip()
+        if not google_key or not google_engine_id:
+            pytest.fail(
+                "USE_GOOGLE_SEARCH=true，但 GOOGLE_SEARCH_API_KEY 或 "
+                "GOOGLE_SEARCH_ENGINE_ID 未配置。"
+            )
+        adapters[SearchSource.GOOGLE_SEARCH] = GoogleSearchAdapter(
+            api_key=google_key,
+            engine_id=google_engine_id,
+            timeout_seconds=25.0,
         )
 
     return adapters

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scholar Agent</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="logo">S</span><div><h1>Scholar Agent</h1><p>智能学术论文检索</p></div></div>
+    <span class="status"><i></i> 服务已连接</span>
+  </header>
+  <main>
+    <section class="hero">
+      <p class="eyebrow">ACADEMIC SEARCH ASSISTANT</p>
+      <h2>把研究问题，变成可用的论文清单</h2>
+      <p class="intro">用自然语言描述主题、年份、作者或排除条件，系统会自动理解并检索。</p>
+      <form id="search-form">
+        <textarea id="question" rows="4" placeholder="例如：查找 2023 年之后关于大语言模型检索增强生成的论文，排除综述文章" required></textarea>
+        <div class="form-row">
+          <div class="options">
+            <label>运行模式 <select id="mode"><option value="search">完整论文检索</option><option value="understanding">仅分析问题</option></select></label>
+            <label>结果数量 <select id="top-k"><option>5</option><option selected>10</option><option>20</option><option>30</option></select></label>
+            <label class="check"><input id="selector" type="checkbox" checked> 启用 LLM 精选</label>
+          </div>
+          <button id="submit" type="submit"><span>开始检索</span><b>→</b></button>
+        </div>
+      </form>
+      <div class="examples"><span>试一试：</span><button>近三年的多模态 RAG 研究</button><button>用于时间序列预测的 Transformer</button></div>
+    </section>
+
+    <section id="progress" class="panel hidden">
+      <div class="spinner"></div><div><h3>正在处理你的问题</h3><p>查询理解、扩展与检索可能需要几十秒，请稍候…</p></div>
+    </section>
+    <section id="error" class="error hidden"></section>
+    <section id="summary" class="summary hidden"></section>
+    <section id="results" class="results hidden"><div class="section-title"><div><p>SEARCH RESULTS</p><h3>检索结果</h3></div><button id="json-btn">查看原始 JSON</button></div><div id="paper-list"></div></section>
+    <dialog id="json-dialog"><div class="dialog-head"><h3>原始结果</h3><button id="close-dialog">×</button></div><pre id="json-output"></pre></dialog>
+  </main>
+  <footer>Scholar Agent V2 · 多源学术检索系统</footer>
+  <script src="/app.js"></script>
+</body>
+</html>

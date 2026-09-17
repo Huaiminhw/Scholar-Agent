@@ -67,6 +67,8 @@ def _choose_authors(hits: list[RetrievalHit]) -> list[str]:
         SearchSource.SEMANTIC_SCHOLAR: 3,
         SearchSource.OPENALEX: 2,
         SearchSource.ARXIV: 1,
+        SearchSource.GOOGLE_SEARCH: 0,
+        SearchSource.PASA_LOCAL: 0,
     }
     best_hit = max(
         (h for h in hits if h.authors),

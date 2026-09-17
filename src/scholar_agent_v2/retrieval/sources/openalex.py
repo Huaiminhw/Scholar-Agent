@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from typing import Any
+from typing import Any, Literal
 
 from ..models import (
     AdapterFetchResult,
     AdapterSearchResult,
+    CitationEdge,
+    CitationLookupKey,
+    CitationNeighborResult,
     RetrievalHit,
     RetrievalOrigin,
     RetrievalStrategy,
@@ -28,6 +31,7 @@ class OpenAlexAdapter(AcademicSourceAdapter):
         identifier_lookup=True,
         author_search=True,
         filter_only=True,
+        citation_search=True,
         supported_filters={"year", "author", "publication_type", "min_citations"},
     )
 
@@ -158,6 +162,74 @@ class OpenAlexAdapter(AcademicSourceAdapter):
         records = [x for x in results if not isinstance(x, Exception)]
         warnings = [f"OpenAlex enrichment failed for {identifier}: {result}" for identifier, result in zip(unique, results) if isinstance(result, Exception)]
         return AdapterFetchResult(records=records, api_calls=len(unique), warnings=warnings)
+
+    async def citation_neighbors(
+        self,
+        seed: CitationLookupKey,
+        *,
+        direction: Literal["forward", "backward"],
+        limit: int,
+    ) -> CitationNeighborResult:
+        if limit <= 0:
+            return CitationNeighborResult()
+        work_id, seed_raw, resolve_calls = await self._resolve_citation_seed(seed)
+        if not work_id:
+            return CitationNeighborResult(
+                api_calls=resolve_calls,
+                warnings=[f"OpenAlex could not resolve citation seed {seed.candidate_id}"],
+            )
+
+        params: dict[str, Any] = {
+            **self._auth_params(),
+            "per-page": min(limit, 100),
+        }
+        api_calls = resolve_calls
+        if direction == "forward":
+            params["filter"] = f"cites:{work_id}"
+            response = await self._get(f"{self.BASE_URL}/works", params=params)
+            api_calls += 1
+            raws = response.json().get("results", []) or []
+        else:
+            referenced = list((seed_raw or {}).get("referenced_works") or [])[:limit]
+            if not referenced:
+                return CitationNeighborResult(api_calls=api_calls)
+            short_ids = [value.rstrip("/").split("/")[-1] for value in referenced]
+            params["filter"] = "openalex_id:" + "|".join(short_ids)
+            response = await self._get(f"{self.BASE_URL}/works", params=params)
+            api_calls += 1
+            raws = response.json().get("results", []) or []
+
+        edges = [
+            CitationEdge(
+                source=self.source,
+                direction=direction,
+                seed_candidate_id=seed.candidate_id,
+                target=normalize_openalex_work(raw),
+            )
+            for raw in raws
+            if isinstance(raw, dict) and raw.get("id")
+        ]
+        return CitationNeighborResult(edges=edges, api_calls=api_calls)
+
+    async def _resolve_citation_seed(
+        self,
+        seed: CitationLookupKey,
+    ) -> tuple[str | None, dict[str, Any] | None, int]:
+        target: str | None = seed.openalex_id
+        if target:
+            target = target.rstrip("/").split("/")[-1]
+        elif seed.doi:
+            target = f"https://doi.org/{seed.doi}"
+        if not target:
+            return None, None, 0
+        response = await self._get(
+            f"{self.BASE_URL}/works/{target}",
+            params=self._auth_params(),
+        )
+        raw = response.json()
+        raw_id = raw.get("id")
+        work_id = raw_id.rstrip("/").split("/")[-1] if raw_id else None
+        return work_id, raw, 1
 
     def _compile_filters(self, route: RouteSpec) -> list[str]:
         f = route.filters

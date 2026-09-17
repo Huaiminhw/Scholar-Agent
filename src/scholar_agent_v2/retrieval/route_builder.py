@@ -15,6 +15,7 @@ from ..query_understanding.schema import (
     ConstraintLevel,
     ConstraintOperator,
     ConstraintType,
+    ConstraintValue,
     LogicNode,
     EntityType,
     QueryAnalysisResult,
@@ -23,6 +24,7 @@ from ..query_understanding.schema import (
 )
 
 from .models import (
+    AdaptiveDepthBudget,
     RetrievalFilters,
     RetrievalPlan,
     RetrievalStrategy,
@@ -33,6 +35,14 @@ from .models import (
 
 
 DEFAULT_CAPABILITIES: dict[SearchSource, SourceCapabilities] = {
+    SearchSource.PASA_LOCAL: SourceCapabilities(
+        relevance_search=True,
+        title_search=True,
+        identifier_lookup=True,
+        author_search=False,
+        filter_only=False,
+        supported_filters=set(),
+    ),
     SearchSource.OPENALEX: SourceCapabilities(
         relevance_search=True,
         title_search=True,
@@ -68,24 +78,53 @@ DEFAULT_CAPABILITIES: dict[SearchSource, SourceCapabilities] = {
         filter_only=False,
         supported_filters=set(),
     ),
+    SearchSource.GOOGLE_SEARCH: SourceCapabilities(
+        relevance_search=True,
+        title_search=True,
+        identifier_lookup=True,
+        author_search=True,
+        filter_only=False,
+        supported_filters=set(),
+    ),
 }
 
 
 @dataclass(frozen=True)
-class _Budget:
+class RetrievalModeBudget:
     max_routes: int
-    route_limit: int
+    first_round_limit: int
+    max_route_limit: int
     max_total_hits: int
+    adaptive_depth: bool = False
+    min_new_candidate_rate: float = 0.15
 
 
-MODE_BUDGETS: dict[RetrievalMode, _Budget] = {
-    RetrievalMode.SPECIFIC: _Budget(3, 8, 24),
-    RetrievalMode.PRECISE: _Budget(6, 18, 110),
-    RetrievalMode.LATEST: _Budget(8, 24, 190),
-    RetrievalMode.SEMINAL: _Budget(8, 24, 190),
-    RetrievalMode.OVERVIEW: _Budget(8, 25, 200),
-    RetrievalMode.COMPREHENSIVE: _Budget(10, 28, 280),
+MODE_BUDGETS: dict[RetrievalMode, RetrievalModeBudget] = {
+    RetrievalMode.SPECIFIC: RetrievalModeBudget(3, 8, 8, 24),
+    RetrievalMode.PRECISE: RetrievalModeBudget(6, 18, 18, 110),
+    RetrievalMode.LATEST: RetrievalModeBudget(8, 24, 24, 190),
+    RetrievalMode.SEMINAL: RetrievalModeBudget(8, 24, 24, 190),
+    RetrievalMode.OVERVIEW: RetrievalModeBudget(8, 25, 25, 200),
+    # Broad queries probe every route at 28 and only deepen productive,
+    # saturated routes to 50.  The executor reads this plan-level policy and
+    # contains no 28/50 constants of its own.
+    RetrievalMode.COMPREHENSIVE: RetrievalModeBudget(
+        10,
+        28,
+        50,
+        500,
+        adaptive_depth=True,
+        min_new_candidate_rate=0.15,
+    ),
 }
+
+# Keep credentialed optional sources opt-in when callers do not pass an
+# explicit list. Runtime entry points should normally use get_enabled_sources().
+DEFAULT_ENABLED_SOURCES: tuple[SearchSource, ...] = (
+    SearchSource.OPENALEX,
+    SearchSource.SEMANTIC_SCHOLAR,
+    SearchSource.ARXIV,
+)
 
 
 @dataclass
@@ -119,9 +158,13 @@ class RetrievalRouteBuilder:
         self,
         capabilities: dict[SearchSource, SourceCapabilities] | None = None,
         enabled_sources: Iterable[SearchSource] | None = None,
+        mode_budgets: dict[RetrievalMode, RetrievalModeBudget] | None = None,
     ) -> None:
         self.capabilities = capabilities or DEFAULT_CAPABILITIES
-        self.enabled_sources = list(enabled_sources or list(SearchSource))
+        self.enabled_sources = list(
+            DEFAULT_ENABLED_SOURCES if enabled_sources is None else enabled_sources
+        )
+        self.mode_budgets = dict(MODE_BUDGETS if mode_budgets is None else mode_budgets)
 
     def build(
         self,
@@ -129,7 +172,7 @@ class RetrievalRouteBuilder:
         generation: QueryGenerationResult | QueryGenerationOutput,
     ) -> RetrievalPlan:
         gen = generation.result if isinstance(generation, QueryGenerationOutput) else generation
-        budget = MODE_BUDGETS[analysis.intent.mode]
+        budget = self.mode_budgets[analysis.intent.mode]
         branches = self._hard_logic_branches(analysis)
         queries = self._select_queries(analysis, gen)
 
@@ -212,7 +255,10 @@ class RetrievalRouteBuilder:
                 )
                 continue
 
-            route_limit = min(budget.route_limit, max(1, budget.max_total_hits // max(1, len(selected))))
+            route_limit = min(
+                budget.max_route_limit,
+                max(1, budget.max_total_hits // max(1, len(selected))),
+            )
             routes.append(
                 RouteSpec(
                     route_id=f"RT{i:03d}",
@@ -233,10 +279,20 @@ class RetrievalRouteBuilder:
         if not routes:
             warnings.append("No executable retrieval route was produced.")
 
+        planned_max_limit = max(
+            (route.limit for route in routes),
+            default=budget.max_route_limit,
+        )
         return RetrievalPlan(
             routes=routes,
             max_routes=budget.max_routes,
             max_total_hits=budget.max_total_hits,
+            depth_budget=AdaptiveDepthBudget(
+                enabled=budget.adaptive_depth,
+                first_round_limit=min(budget.first_round_limit, planned_max_limit),
+                max_route_limit=planned_max_limit,
+                min_new_candidate_rate=budget.min_new_candidate_rate,
+            ),
             warnings=warnings,
         )
 
@@ -275,30 +331,56 @@ class RetrievalRouteBuilder:
     ) -> list[SearchSource]:
         if strategy in {RetrievalStrategy.IDENTIFIER, RetrievalStrategy.TITLE}:
             return [
+                SearchSource.PASA_LOCAL,
                 SearchSource.SEMANTIC_SCHOLAR,
                 SearchSource.OPENALEX,
                 SearchSource.ARXIV,
+                SearchSource.GOOGLE_SEARCH,
             ]
         if strategy == RetrievalStrategy.AUTHOR:
             return [
+                SearchSource.PASA_LOCAL,
                 SearchSource.OPENALEX,
                 SearchSource.SEMANTIC_SCHOLAR,
                 SearchSource.ARXIV,
+                SearchSource.GOOGLE_SEARCH,
             ]
 
         if mode == RetrievalMode.LATEST:
-            base = [SearchSource.ARXIV, SearchSource.SEMANTIC_SCHOLAR, SearchSource.OPENALEX]
+            base = [
+                SearchSource.PASA_LOCAL,
+                SearchSource.ARXIV,
+                SearchSource.SEMANTIC_SCHOLAR,
+                SearchSource.OPENALEX,
+                SearchSource.GOOGLE_SEARCH,
+            ]
         else:
-            base = [SearchSource.SEMANTIC_SCHOLAR, SearchSource.OPENALEX, SearchSource.ARXIV]
+            base = [
+                SearchSource.PASA_LOCAL,
+                SearchSource.SEMANTIC_SCHOLAR,
+                SearchSource.OPENALEX,
+                SearchSource.GOOGLE_SEARCH,
+                SearchSource.ARXIV,
+            ]
 
         if kind == QueryKind.CORE:
             return base
         if kind == QueryKind.RELATION:
             return [s for s in base if s != SearchSource.ARXIV]
         if kind == QueryKind.ALIAS:
-            return [SearchSource.SEMANTIC_SCHOLAR, SearchSource.OPENALEX]
+            return [
+                SearchSource.PASA_LOCAL,
+                SearchSource.SEMANTIC_SCHOLAR,
+                SearchSource.OPENALEX,
+                SearchSource.GOOGLE_SEARCH,
+            ]
         if kind == QueryKind.EXPANDED:
-            return [SearchSource.SEMANTIC_SCHOLAR, SearchSource.OPENALEX]
+            return [
+                SearchSource.PASA_LOCAL,
+                SearchSource.SEMANTIC_SCHOLAR,
+                SearchSource.OPENALEX,
+                SearchSource.GOOGLE_SEARCH,
+            ]
         return base
 
     def _route_priority(
@@ -312,8 +394,10 @@ class RetrievalRouteBuilder:
             QueryKind.EXPANDED: 0.74,
         }[query.kind]
         source_weight = {
+            SearchSource.PASA_LOCAL: 1.00,
             SearchSource.SEMANTIC_SCHOLAR: 1.00,
             SearchSource.OPENALEX: 0.96,
+            SearchSource.GOOGLE_SEARCH: 0.90,
             SearchSource.ARXIV: 0.88,
         }[source]
         if mode == RetrievalMode.LATEST and source == SearchSource.ARXIV:
@@ -503,7 +587,7 @@ class RetrievalRouteBuilder:
         return RetrievalRouteBuilder._dedup_str(names)
 
     @staticmethod
-    def _constraint_values(c: ConstraintItem) -> list[object]:
+    def _constraint_values(c: ConstraintItem) -> list[ConstraintValue]:
         if c.values:
             return list(c.values)
         return [c.value] if c.value is not None else []
@@ -575,4 +659,11 @@ def build_retrieval_plan(
     return RetrievalRouteBuilder(capabilities, enabled_sources).build(analysis, generation)
 
 
-__all__ = ["RetrievalRouteBuilder", "build_retrieval_plan", "DEFAULT_CAPABILITIES"]
+__all__ = [
+    "RetrievalRouteBuilder",
+    "build_retrieval_plan",
+    "DEFAULT_CAPABILITIES",
+    "DEFAULT_ENABLED_SOURCES",
+    "RetrievalModeBudget",
+    "MODE_BUDGETS",
+]

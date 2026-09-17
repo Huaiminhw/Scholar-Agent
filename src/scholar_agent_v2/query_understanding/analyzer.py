@@ -5,6 +5,8 @@ Query Understanding（查询理解）执行器。
 主流程：
 User Query
     ↓
+Deterministic Router（明确标识符/精确标题可直接解析）
+    ↓ 其余查询
 Prompt 构造
     ↓
 LLM 主分析（通常 1 次）
@@ -47,10 +49,11 @@ from .prompt import (
     build_query_repair_messages,
     get_query_analysis_json_schema,
 )
+from .normalizer import normalize_query_analysis
+from .router import QueryUnderstandingRouter, RouterConfig, UnderstandingRoute
 from .schema import QueryAnalysisResult
 from .validator import (
     ValidationReport,
-    safe_normalize,
     validate_query_analysis,
 )
 
@@ -115,6 +118,12 @@ class LLMClient(Protocol):
 
 @dataclass(frozen=True)
 class AnalyzerConfig:
+    # 明确的 DOI/arXiv/PMID/OpenAlex/CorpusID 或精确标题查询，
+    # 直接生成 QueryAnalysisResult，不消耗 LLM Token。
+    enable_deterministic_router: bool = True
+    enable_identifier_fast_path: bool = True
+    enable_exact_title_fast_path: bool = True
+
     # 查询理解尽量确定性
     temperature: float = 0.0
 
@@ -162,6 +171,9 @@ class AnalyzerMetrics:
     latency_ms: float = 0.0
     primary_latency_ms: float = 0.0
     repair_latency_ms: float = 0.0
+    router_latency_ms: float = 0.0
+
+    llm_bypassed: bool = False
 
     model_names: list[str] = field(default_factory=list)
 
@@ -182,12 +194,18 @@ class QueryAnalyzerOutput:
 
     repaired:
         是否触发过第二次 Repair。
+
+    repair_trigger:
+        第一次结果为何未通过；仅在 Repair 成功时存在。
     """
     result: QueryAnalysisResult
     validation: ValidationReport
     metrics: AnalyzerMetrics
 
     repaired: bool = False
+    repair_trigger: str | None = None
+    understanding_route: str = UnderstandingRoute.LLM.value
+    route_reason: str | None = None
 
     raw_primary_output: str | Mapping[str, Any] | None = None
     raw_repair_output: str | Mapping[str, Any] | None = None
@@ -395,7 +413,7 @@ def _validate_candidate(
         )
 
     # 先执行安全、本地、无语义变化的修正
-    result = safe_normalize(
+    result = normalize_query_analysis(
         result,
         original_query=original_query,
     )
@@ -432,9 +450,17 @@ class QueryAnalyzer:
         client: LLMClient,
         *,
         config: AnalyzerConfig | None = None,
+        router: QueryUnderstandingRouter | None = None,
     ) -> None:
         self.client = client
         self.config = config or AnalyzerConfig()
+        self.router = router or QueryUnderstandingRouter(
+            RouterConfig(
+                enabled=self.config.enable_deterministic_router,
+                enable_identifier_fast_path=self.config.enable_identifier_fast_path,
+                enable_exact_title_fast_path=self.config.enable_exact_title_fast_path,
+            )
+        )
 
     def _prompt_config(self) -> PromptConfig:
         return PromptConfig(
@@ -569,6 +595,42 @@ class QueryAnalyzer:
         overall_started = time.perf_counter()
 
         # ----------------------------------------------------
+        # 0. Deterministic Fast Path
+        # ----------------------------------------------------
+        router_started = time.perf_counter()
+        route_decision = self.router.route(user_query)
+        metrics.router_latency_ms = (
+            time.perf_counter() - router_started
+        ) * 1000.0
+
+        if not route_decision.use_llm and route_decision.result is not None:
+            routed_result = normalize_query_analysis(
+                route_decision.result,
+                original_query=user_query,
+            )
+            routed_validation = validate_query_analysis(
+                routed_result,
+                original_query=user_query,
+            )
+            if routed_validation.is_valid:
+                metrics.llm_bypassed = True
+                metrics.latency_ms = (
+                    time.perf_counter() - overall_started
+                ) * 1000.0
+                return QueryAnalyzerOutput(
+                    result=routed_result,
+                    validation=routed_validation,
+                    metrics=metrics,
+                    understanding_route=route_decision.route.value,
+                    route_reason=route_decision.reason,
+                )
+
+            logger.warning(
+                "Deterministic query route failed validation; falling back to LLM: %s",
+                routed_validation.summary(),
+            )
+
+        # ----------------------------------------------------
         # A. Primary Analysis
         # ----------------------------------------------------
         primary_messages = build_query_analysis_messages(
@@ -633,6 +695,7 @@ class QueryAnalyzer:
                 metrics=metrics,
                 repaired=False,
                 raw_primary_output=raw_primary,
+                route_reason=route_decision.reason,
             )
 
         # ----------------------------------------------------
@@ -739,8 +802,10 @@ class QueryAnalyzer:
                 validation=repair_validation.report,
                 metrics=metrics,
                 repaired=True,
+                repair_trigger=primary_error,
                 raw_primary_output=raw_primary,
                 raw_repair_output=raw_repair,
+                route_reason=route_decision.reason,
             )
 
         raise QueryAnalysisValidationError(

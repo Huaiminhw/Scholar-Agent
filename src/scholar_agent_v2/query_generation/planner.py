@@ -163,14 +163,19 @@ def _has_useful_aliases(analysis: QueryAnalysisResult) -> bool:
 
 def _fit_budget(budget: ExpansionBudget, max_total: int) -> ExpansionBudget:
     """
-    超预算时按 EXPANDED -> ALIAS -> RELATION 的顺序收缩；CORE/EXACT 最后保留。
+    超预算时先牺牲 Alias，再收缩重复的 Relation/Expansion 角度；
+    至少一条 CORE/EXACT 和显式 Relation 最后保留。
     """
     values = budget.model_dump()
     while sum(values.values()) > max_total:
-        if values["expanded"] > 0:
-            values["expanded"] -= 1
-        elif values["alias"] > 0:
+        if values["alias"] > 0:
             values["alias"] -= 1
+        elif values["relation"] > 1:
+            values["relation"] -= 1
+        elif values["expanded"] > 1:
+            values["expanded"] -= 1
+        elif values["expanded"] > 0:
+            values["expanded"] -= 1
         elif values["relation"] > 0:
             values["relation"] -= 1
         elif values["core"] > 1:

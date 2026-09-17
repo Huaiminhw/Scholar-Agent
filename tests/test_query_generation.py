@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from scholar_agent_v2.query_generation.dedup import deduplicate_queries
 from scholar_agent_v2.query_generation.generator import GeneratorConfig, QueryGenerator
 from scholar_agent_v2.query_generation.models import GeneratedQuery, QueryKind
+from scholar_agent_v2.query_generation.prompt import (
+    QUERY_EXPANSION_SYSTEM_PROMPT,
+    build_expansion_user_prompt,
+)
 from scholar_agent_v2.query_understanding.analyzer import LLMResponse, LLMUsage
 from scholar_agent_v2.query_understanding.schema import (
     ConstraintItem,
@@ -314,6 +319,9 @@ def test_llm_expansion_calls_at_most_once_and_tracks_metrics():
     assert output.metrics.total_tokens == 140
     assert output.metrics.model_names == ["fake-query-expander"]
     assert len(output.result.queries) <= 5
+    assert output.result.plan.budget.alias == 0
+    assert output.result.plan.budget.relation == 2
+    assert output.result.plan.budget.expanded == 2
 
 
 # ============================================================
@@ -332,6 +340,34 @@ def test_invented_year_is_filtered():
 
     assert all("2025" not in q.text for q in output.result.queries)
     assert any(issue.code == "INVENTED_YEAR" for issue in output.validation.issues)
+
+
+def test_supported_hard_year_stays_in_downstream_filter_not_expansion():
+    analysis = make_complex_analysis()
+    client = FakeExpansionLLM(
+        ["2023 reinforcement learning academic search agent"]
+    )
+    output = run_generate(QueryGenerator(client=client), analysis)
+
+    assert all("2023" not in q.text for q in output.result.queries)
+    assert any(
+        issue.code == "HARD_METADATA_EMBEDDED"
+        for issue in output.validation.issues
+    )
+
+
+def test_expansion_may_omit_a_semantic_hard_constraint_for_recall():
+    analysis = make_complex_analysis()
+    client = FakeExpansionLLM(
+        ["reinforcement learning for scholarly search agents"]
+    )
+    output = run_generate(QueryGenerator(client=client), analysis)
+
+    assert any(
+        q.kind == QueryKind.EXPANDED
+        and q.text == "reinforcement learning for scholarly search agents"
+        for q in output.result.queries
+    )
 
 
 # ============================================================
@@ -428,6 +464,32 @@ def test_llm_failure_degrades_to_local_queries():
     assert output.result.degraded is True
     assert output.result.queries
     assert any(q.kind in {QueryKind.CORE, QueryKind.RELATION} for q in output.result.queries)
+
+
+def test_expansion_prompt_treats_hard_constraints_as_selection_boundaries():
+    analysis = make_complex_analysis()
+    prompt = build_expansion_user_prompt(
+        analysis,
+        existing_queries=[analysis.content],
+        max_queries=2,
+    )
+    json_text = prompt.split("\n\n", 1)[1].rsplit("\n\nReturn exactly:", 1)[0]
+    payload = json.loads(json_text)
+
+    assert "recall probe" in QUERY_EXPANSION_SYSTEM_PROMPT
+    assert "do NOT pack every requirement into every query" in (
+        QUERY_EXPANSION_SYSTEM_PROMPT
+    )
+    constraints = payload["constraints"]
+    assert "final_selection_requirements" in constraints
+    assert "hard" not in constraints
+    assert "original_query" not in payload
+    assert "goal" not in payload["intent"]
+    assert all(
+        "source_text" not in item and "id" not in item
+        for bucket in constraints.values()
+        for item in bucket
+    )
 
 
 # ============================================================

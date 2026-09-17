@@ -9,11 +9,13 @@ from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 from ..models import (
     AdapterFetchResult,
     AdapterSearchResult,
+    CitationLookupKey,
+    CitationNeighborResult,
     RouteSpec,
     SearchSource,
     SourceCapabilities,
@@ -77,6 +79,18 @@ class AcademicSourceAdapter(ABC):
     @abstractmethod
     async def fetch_details(self, ids: list[str]) -> AdapterFetchResult:
         raise NotImplementedError
+
+    async def citation_neighbors(
+        self,
+        seed: CitationLookupKey,
+        *,
+        direction: Literal["forward", "backward"],
+        limit: int,
+    ) -> CitationNeighborResult:
+        """Return one-hop citation neighbors when supported by the adapter."""
+        return CitationNeighborResult(
+            warnings=[f"{self.source.value} does not support citation expansion"]
+        )
 
     @contextmanager
     def track_http_requests(self) -> Iterator[HTTPRequestCounter]:

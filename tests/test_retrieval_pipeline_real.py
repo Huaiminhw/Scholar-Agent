@@ -91,6 +91,7 @@ from scholar_agent_v2.retrieval.models import (
 from scholar_agent_v2.retrieval.orchestrator import RetrievalOrchestrator
 from scholar_agent_v2.retrieval.route_builder import RetrievalRouteBuilder
 from scholar_agent_v2.retrieval.sources.arxiv import ArxivAdapter
+from scholar_agent_v2.retrieval.sources.google_search import GoogleSearchAdapter
 from scholar_agent_v2.retrieval.sources.openalex import OpenAlexAdapter
 from scholar_agent_v2.retrieval.sources.semantic_scholar import SemanticScholarAdapter
 from tests.real_llm_client import build_client
@@ -131,6 +132,7 @@ SOURCE_ROUTE_CAPS: dict[SearchSource, int] = {
     SearchSource.OPENALEX: int(os.getenv("REAL_PIPELINE_OPENALEX_ROUTES", "4")),
     SearchSource.SEMANTIC_SCHOLAR: int(os.getenv("REAL_PIPELINE_S2_ROUTES", "1")),
     SearchSource.ARXIV: int(os.getenv("REAL_PIPELINE_ARXIV_ROUTES", "1")),
+    SearchSource.GOOGLE_SEARCH: int(os.getenv("REAL_PIPELINE_GOOGLE_ROUTES", "1")),
 }
 
 
@@ -412,6 +414,20 @@ def _build_adapters(enabled_sources: list[SearchSource]):
 
     if SearchSource.ARXIV in enabled:
         adapters[SearchSource.ARXIV] = ArxivAdapter(timeout_seconds=30.0)
+
+    if SearchSource.GOOGLE_SEARCH in enabled:
+        key = os.getenv("GOOGLE_SEARCH_API_KEY", "").strip()
+        engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID", "").strip()
+        if not key or not engine_id:
+            pytest.fail(
+                "USE_GOOGLE_SEARCH=true，但 GOOGLE_SEARCH_API_KEY 或 "
+                "GOOGLE_SEARCH_ENGINE_ID 未配置。"
+            )
+        adapters[SearchSource.GOOGLE_SEARCH] = GoogleSearchAdapter(
+            api_key=key,
+            engine_id=engine_id,
+            timeout_seconds=25.0,
+        )
 
     return adapters
 

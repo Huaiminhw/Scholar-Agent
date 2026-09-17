@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from ..query_understanding.schema import (
     ConstraintItem,
@@ -16,6 +16,7 @@ from ..query_understanding.schema import (
 )
 
 from .models import CandidatePaper, FilterEvidence, MatchStatus
+from .tri_logic import collect_refs, evaluate_logic, tri_and, tri_or
 
 
 @dataclass
@@ -35,30 +36,6 @@ def _norm(value: Any) -> str:
 
 def _constraint_values(c: ConstraintItem) -> list[Any]:
     return list(c.values) if c.values else ([c.value] if c.value is not None else [])
-
-
-def _tri_and(values: list[MatchStatus]) -> MatchStatus:
-    if any(v == MatchStatus.FAIL for v in values):
-        return MatchStatus.FAIL
-    if values and all(v == MatchStatus.PASS for v in values):
-        return MatchStatus.PASS
-    return MatchStatus.UNKNOWN if values else MatchStatus.PASS
-
-
-def _tri_or(values: list[MatchStatus]) -> MatchStatus:
-    if any(v == MatchStatus.PASS for v in values):
-        return MatchStatus.PASS
-    if values and all(v == MatchStatus.FAIL for v in values):
-        return MatchStatus.FAIL
-    return MatchStatus.UNKNOWN if values else MatchStatus.FAIL
-
-
-def _tri_not(value: MatchStatus) -> MatchStatus:
-    if value == MatchStatus.PASS:
-        return MatchStatus.FAIL
-    if value == MatchStatus.FAIL:
-        return MatchStatus.PASS
-    return MatchStatus.UNKNOWN
 
 
 def _compare_numeric(observed: int | float | None, c: ConstraintItem) -> MatchStatus:
@@ -224,23 +201,6 @@ def evaluate_constraint(
     return FilterEvidence(ref_id=c.id, status=status, message=msg, field=field, observed=observed)
 
 
-def _evaluate_logic(
-    node: LogicNode,
-    leaf_eval: Callable[[str], MatchStatus],
-) -> MatchStatus:
-    if node.operator == "LEAF":
-        assert node.ref_id is not None
-        return leaf_eval(node.ref_id)
-    child_values = [_evaluate_logic(child, leaf_eval) for child in node.children]
-    if node.operator == "AND":
-        return _tri_and(child_values)
-    if node.operator == "OR":
-        return _tri_or(child_values)
-    if node.operator == "NOT":
-        return _tri_not(child_values[0])
-    return MatchStatus.UNKNOWN
-
-
 def evaluate_candidate(
     candidate: CandidatePaper,
     analysis: QueryAnalysisResult,
@@ -282,28 +242,28 @@ def evaluate_candidate(
 
     # Hard: 有显式 logic 就按三值逻辑，否则默认 AND。
     if analysis.logic.hard is not None:
-        hard_status = _evaluate_logic(analysis.logic.hard, leaf_eval)
-        referenced = _collect_refs(analysis.logic.hard)
+        hard_status = evaluate_logic(analysis.logic.hard, leaf_eval)
+        referenced = collect_refs(analysis.logic.hard)
         missing_hard = [c.id for c in analysis.constraints.hard if c.id not in referenced]
         missing_rel = [r.id for r in analysis.relations if r.level == ConstraintLevel.HARD and r.id not in referenced]
-        hard_status = _tri_and([hard_status] + [leaf_eval(x) for x in missing_hard + missing_rel])
+        hard_status = tri_and([hard_status] + [leaf_eval(x) for x in missing_hard + missing_rel])
     else:
         hard_values = [leaf_eval(c.id) for c in analysis.constraints.hard]
         hard_values += [leaf_eval(r.id) for r in analysis.relations if r.level == ConstraintLevel.HARD]
-        hard_status = _tri_and(hard_values)
+        hard_status = tri_and(hard_values)
 
     # Exclude: “匹配排除条件”意味着最终 FAIL。默认多个 exclude 为 OR。
     if analysis.logic.exclude is not None:
-        exclude_match = _evaluate_logic(analysis.logic.exclude, leaf_eval)
-        referenced = _collect_refs(analysis.logic.exclude)
+        exclude_match = evaluate_logic(analysis.logic.exclude, leaf_eval)
+        referenced = collect_refs(analysis.logic.exclude)
         missing_ex = [c.id for c in analysis.constraints.exclude if c.id not in referenced]
         missing_rel = [r.id for r in analysis.relations if r.level == ConstraintLevel.EXCLUDE and r.id not in referenced]
         if missing_ex or missing_rel:
-            exclude_match = _tri_or([exclude_match] + [leaf_eval(x) for x in missing_ex + missing_rel])
+            exclude_match = tri_or([exclude_match] + [leaf_eval(x) for x in missing_ex + missing_rel])
     else:
         exclude_values = [leaf_eval(c.id) for c in analysis.constraints.exclude]
         exclude_values += [leaf_eval(r.id) for r in analysis.relations if r.level == ConstraintLevel.EXCLUDE]
-        exclude_match = _tri_or(exclude_values) if exclude_values else MatchStatus.FAIL
+        exclude_match = tri_or(exclude_values) if exclude_values else MatchStatus.FAIL
 
     if hard_status == MatchStatus.FAIL or exclude_match == MatchStatus.PASS:
         final = MatchStatus.FAIL
@@ -326,15 +286,6 @@ def evaluate_candidate(
         evidence=list(evidence_map.values()),
         soft_match_score=float(soft_score),
     )
-
-
-def _collect_refs(node: LogicNode) -> set[str]:
-    if node.operator == "LEAF":
-        return {node.ref_id} if node.ref_id else set()
-    out: set[str] = set()
-    for child in node.children:
-        out |= _collect_refs(child)
-    return out
 
 
 def apply_filters(
